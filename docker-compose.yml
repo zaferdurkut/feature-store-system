@@ -1,0 +1,172 @@
+version: "3"
+
+services:
+  application:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: application
+    command: /bin/sh -c "/application_start.sh"
+    restart: always
+    ports:
+      - "8000:80"
+    env_file:
+      - .env
+    volumes:
+      - .:/app
+    depends_on:
+      - redis
+
+
+  redis:
+    restart: always
+    container_name: redis
+    image: redis:5.0.7
+    ports:
+      - "6379:6379"
+    volumes:
+      - .data/db:/data
+
+  zookeeper:
+    image: wurstmeister/zookeeper:latest
+    container_name: zookeeper
+    restart: always
+    ports:
+      - "2181:2181"
+      - "19092:19092"
+
+  kafka:
+    image: wurstmeister/kafka:latest
+    container_name: kafka
+    restart: always
+    ports:
+      - "9092:9092"
+      - '29092:29092'
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_ADVERTISED_HOST_NAME: kafka
+      KAFKA_ADVERTISED_PORT: 9092
+      KAFKA_CREATE_TOPICS: "orders:1:1,notifications:1:1"
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      ALLOW_PLAINTEXT_LISTENER: yes
+      KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP: "PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT"
+      KAFKA_CFG_LISTENERS: "PLAINTEXT://:9092,PLAINTEXT_HOST://:9092"
+      KAFKA_CFG_ADVERTISED_LISTENERS: "PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:9092"
+#      KAFKA_LOG4J_LOGGERS: >-
+#        kafka.controller=INFO,
+#        kafka.producer.async.DefaultEventHandler=INFO,
+#        state.change.logger=INFO
+    volumes:
+      - ./.docker/kafka/var/run/docker.sock:/var/run/docker.sock
+    links:
+      - zookeeper
+    depends_on:
+      - zookeeper
+
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    container_name: jaeger
+    env_file:
+      - .env
+    ports:
+      - "5776:5776/udp"
+      - "16686:16686"
+    depends_on:
+      - application
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    volumes:
+      - .prometheus-data:/prometheus
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    volumes:
+      - .grafana-data:/var/lib/grafana
+      - ./datasource.yml:/etc/grafana/provisioning/datasources/datasource.yml
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    ports:
+      - "3000:3000"
+
+  customer_product_consumer:
+    build:
+      context: .
+      dockerfile: consumer/Dockerfile
+    restart: always
+    container_name: customer_product_consumer
+    env_file:
+      - .env
+    working_dir: /app
+    volumes:
+      - ./:/app
+      - ./.docker/customer_product_consumer/.cache:/root/.cache
+    command: bash -c "/flink/bin/flink run -py consumer/flink_customer_product_stream_consumer.py --jobmanager jobmanager:8081 --target local"
+    # command: bash -c "python -u  consumer/flink_customer_product_stream_consumer.py"
+#    command: bash -c "pip install -r /app/requirements.txt && cd /app/ && tail -f /dev/null"
+    depends_on:
+      - kafka
+      - jobmanager
+      - redis
+
+  customer_product_producer:
+    build:
+      context: .
+      dockerfile: producer/Dockerfile
+    restart: always
+    container_name: customer_product_producer
+    env_file:
+      - .env
+    working_dir: /app
+    volumes:
+      - ./:/app
+      - ./.docker/customer_product_producer/.cache:/root/.cache
+    command: bash -c "python -u  producer/customer_product_producer.py"
+#    command: bash -c "pip install -r /app/requirements.txt && cd /app/ && tail -f /dev/null"
+    depends_on:
+      - kafka
+      - customer_product_consumer
+
+  jobmanager:
+    image: flink:latest
+    restart: always
+    container_name: jobmanager
+    environment:
+      FLINK_PROPERTIES: "jobmanager.rpc.address: jobmanager"
+    volumes:
+      - ./consumer/flink-conf.yaml:/opt/flink/conf/flink-conf.yaml
+    command:
+      - jobmanager
+    ports:
+      - "8081:8081"
+    depends_on:
+      - taskmanager
+
+  taskmanager:
+    image: flink:latest
+    restart: always
+    container_name: taskmanager
+    environment:
+      FLINK_PROPERTIES: "jobmanager.rpc.address: jobmanager"
+    command:
+      - taskmanager
+
+
+  tests:
+    image: application
+    container_name: application-tests
+    volumes:
+      - .:/app
+    depends_on:
+      - application
+    command: bash -c "/wait-for-it.sh application:80 -t 60 --strict -- pytest -c pytest.ini -vv --cov --cov-report=html:coverage-reports/coverage-api.html tests/"
+

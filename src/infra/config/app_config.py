@@ -1,0 +1,25 @@
+from dotenv import load_dotenv
+from starlette.config import Config
+
+load_dotenv()
+
+config = Config(".env")
+
+JAEGER_HOST = config("JAEGER_HOST")
+JAEGER_PORT = config("JAEGER_PORT")
+JAEGER_SAMPLER_TYPE = config("JAEGER_SAMPLER_TYPE")
+JAEGER_SAMPLER_RATE = config("JAEGER_SAMPLER_RATE")
+
+# Redis Real Stream
+REDIS_HOST = config("REDIS_HOST")
+REDIS_PORT = config("REDIS_PORT")
+REDIS_USER_DB = config("REDIS_USER_DB", int)
+
+# Redis Batch
+BATCH_REDIS_HOST=config("BATCH_REDIS_HOST")
+BATCH_REDIS_PORT=config("BATCH_REDIS_PORT")
+BATCH_REDIS_USER_DB=config("BATCH_REDIS_USER_DB", int)
+
+# Kafka
+KAFKA_CUSTOMER_PRODUCT_TOPIC = config("KAFKA_CUSTOMER_PRODUCT_TOPIC")
+KAFKA_CUSTOMER_PRODUCT_SERVERS = config("KAFKA_CUSTOMER_PRODUCT_SERVERS")

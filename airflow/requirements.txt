@@ -1,0 +1,4 @@
+redis==2.10.6
+apache-airflow==2.5.1
+python-dotenv==0.21.1
+apache-airflow-providers-apache-spark==4.1.0

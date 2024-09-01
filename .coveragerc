@@ -1,0 +1,2 @@
+[run]
+omit = [*tests*, *venv*, *site-packages*, *lib*, *bin*, *include*, *share*, *dist*, *build*, *egg*, *egg-info*, *setup.py*, *setup.cfg*, *requirements.txt*, *requirements-dev.txt*, *requirements-test.txt*, *requirements-docs]

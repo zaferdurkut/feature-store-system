@@ -1,0 +1,228 @@
+version: "3"
+
+services:
+  batch-redis:
+    restart: always
+    container_name: batch-redis
+    image: redis:5.0.7
+    ports:
+      - "6380:6379"
+    volumes:
+      - .data/batch-db:/data
+
+  # Spark
+  spark:
+    build:
+      context: .
+      dockerfile: batch/spark.Dockerfile
+    container_name: spark
+    environment:
+      - SPARK_MODE=master
+      - SPARK_RPC_AUTHENTICATION_ENABLED=no
+      - SPARK_RPC_ENCRYPTION_ENABLED=no
+      - SPARK_LOCAL_STORAGE_ENCRYPTION_ENABLED=no
+      - SPARK_SSL_ENABLED=no
+      - SPARK_MASTER_WEBUI_PORT:8080
+      - SPARK_HISTORY_OPTS=-Dspark.history.fs.logDirectory=/opt/bitnami/spark/logs
+    ports:
+      - "8080:8080"
+      - "6066:6066"
+      - "7077:7077"
+      - "4040:4040"
+
+    depends_on:
+      - spark-worker-1
+      - hive-server
+      - spark-history
+      - batch-redis
+      - hive-server-init-db
+#      - airflow
+    volumes:
+      - ./batch:/opt/batch
+      - ./spark-logs/spark-events:/tmp/spark-events
+      - ./spark-logs/spark-history-server-logs:/var/log/spark
+      - ./spark-logs:/opt/bitnami/spark/logs
+
+  spark-worker-1:
+    image: docker.io/bitnami/spark:3-debian-10
+    container_name: spark-worker-1
+    environment:
+      - SPARK_MODE=worker
+      - SPARK_MASTER_URL=spark://spark:7077
+      - SPARK_WORKER_MEMORY=1G
+      - SPARK_WORKER_CORES=1
+      - SPARK_RPC_AUTHENTICATION_ENABLED=no
+      - SPARK_RPC_ENCRYPTION_ENABLED=no
+      - SPARK_LOCAL_STORAGE_ENCRYPTION_ENABLED=no
+      - SPARK_SSL_ENABLED=no
+      - SPARK_WORKER_WEBUI_PORT:8085
+      - SPARK_HISTORY_OPTS=-Dspark.history.fs.logDirectory=/opt/bitnami/spark/logs
+    ports:
+      - "8085:8085"
+    volumes:
+     - ./spark-logs/spark-events:/tmp/spark-events
+     - ./spark-logs/spark-history-server-logs:/var/log/spark
+     - ./spark-logs:/opt/bitnami/spark/logs
+     - ./batch/log4j.properties:/opt/bitnami/spark/conf/log4j.properties
+
+
+  spark-history:
+    image: docker.io/bitnami/spark:3-debian-10
+    container_name: spark-history
+    environment:
+      - SPARK_HISTORY_UI_PORT=18080
+      - SPARK_DAEMON_MEMORY=5g
+      - SPARK_HISTORY_RETAINEDAPPLICATIONS=100
+      - SPARK_HISTORY_UI_MAXAPPLICATIONS=50
+      - SPARK_HISTORY_STORE_MAXDISKUSAGE=20g
+      - SPARK_HISTORY_FS_LOG_DIRECTORY=/tmp/spark-events
+      - SPARK_HISTORY_OPTS=-Dspark.history.fs.logDirectory=/opt/bitnami/spark/logs
+    ports:
+     - "18080:18080"
+    volumes:
+     - ./spark-logs/spark-events:/tmp/spark-events
+     - ./spark-logs/spark-history-server-logs:/var/log/spark
+     - ./spark-logs:/opt/bitnami/spark/logs
+
+  # Hive
+  hive-server:
+    image: bde2020/hive:2.3.2-postgresql-metastore
+    container_name: hive-server
+    volumes:
+      - ./data:/data
+    env_file:
+      - ./batch.env
+    restart: always
+    environment:
+      HIVE_CORE_CONF_javax_jdo_option_ConnectionURL: "jdbc:postgresql://hive-metastore/metastore"
+      SERVICE_PRECONDITION: "hive-metastore:9083"
+    depends_on:
+      - hive-metastore
+    ports:
+      - "10000:10000"
+
+  hive-metastore:
+    image: bde2020/hive:2.3.2-postgresql-metastore
+    container_name: hive-metastore
+    env_file:
+      - ./batch.env
+    command: /opt/hive/bin/hive --service metastore
+    environment:
+      SERVICE_PRECONDITION: "namenode:50070 datanode:50075 hive-metastore-postgresql:5432"
+    depends_on:
+      - hive-metastore-postgresql
+    ports:
+      - "9083:9083"
+
+  hive-metastore-postgresql:
+    image: bde2020/hive-metastore-postgresql:2.3.0
+    container_name: hive-metastore-postgresql
+    volumes:
+      - ./metastore-postgresql/postgresql/data:/var/lib/postgresql/data
+    depends_on:
+      - datanode
+
+  # Hadoop
+  namenode:
+    image: bde2020/hadoop-namenode:2.0.0-hadoop2.7.4-java8
+    container_name: namenode
+    volumes:
+      - ./hdfs/namenode:/hadoop/dfs/name
+    environment:
+      - CLUSTER_NAME=hive
+    env_file:
+      - ./batch.env
+    ports:
+      - "50070:50070"
+
+  datanode:
+    image: bde2020/hadoop-datanode:2.0.0-hadoop2.7.4-java8
+    container_name: datanode
+    volumes:
+      - ./hdfs/datanode:/hadoop/dfs/data
+    env_file:
+      - ./batch.env
+    environment:
+      SERVICE_PRECONDITION: "namenode:50070"
+    depends_on:
+      - namenode
+    ports:
+      - "50075:50075"
+
+  hive-server-init-db:
+    image: bde2020/hive:2.3.2-postgresql-metastore
+    container_name: hive-server-init-db
+    volumes:
+      - ./data:/data
+    env_file:
+      - ./batch.env
+    restart: on-failure
+    environment:
+      HIVE_CORE_CONF_javax_jdo_option_ConnectionURL: "jdbc:postgresql://hive-metastore/metastore"
+      SERVICE_PRECONDITION: "hive-metastore:9083"
+    depends_on:
+      - hive-server
+    command: hive hive -f /data/ecommerce_transactions.hql
+
+  # Airflow
+  airflow-webserver:
+    build:
+      context: .
+      dockerfile: airflow/airflow.Dockerfile
+    image: custom-airflow:latest
+    container_name: airflow-webserver
+    env_file:
+      - ./batch.env
+    ports:
+      - "8090:8080"
+    restart: always
+    environment:
+      - AIRFLOW__CORE__EXECUTOR=LocalExecutor
+      - AIRFLOW__CORE__SQL_ALCHEMY_CONN=postgresql+psycopg2://postgres:postgres@airflow-postgres:5432/airflow
+      - AIRFLOW__CORE__FERNET_KEY=FB0o_zt4e3Ziq3LdUUO7F2Z95cvFFx16hU8jTeR1ASM=
+      - AIRFLOW__CORE__LOAD_EXAMPLES=False
+      - AIRFLOW__CORE__LOGGING_LEVEL=INFO
+      - _PIP_ADDITIONAL_REQUIREMENTS=${_PIP_ADDITIONAL_REQUIREMENTS:- apache-airflow-providers-apache-spark}
+      - JAVA_HOME=/usr/lib/jvm/java-11-openjdk-amd64
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./airflow/logs:/opt/airflow/logs
+      - ./airflow/plugins:/opt/airflow/plugins
+      - ./airflow/airflow.cfg:/opt/airlfow/airflow.cfg
+      - ./airflow/entrypoint.sh:/entrypoint.sh  # Mount the custom entrypoint script
+    depends_on:
+      - airflow-scheduler
+      - airflow-postgres
+
+  airflow-scheduler:
+    image: apache/airflow:2.5.1
+    container_name: airflow-scheduler
+    command: airflow scheduler
+    restart: always
+    env_file:
+      - ./batch.env
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./airflow/logs:/opt/airflow/logs
+      - ./airflow/plugins:/opt/airflow/plugins
+      - ./airflow/airflow.cfg:/opt/airlfow/airflow.cfg
+    environment:
+      - AIRFLOW__CORE__EXECUTOR=LocalExecutor
+      - AIRFLOW__CORE__SQL_ALCHEMY_CONN=postgresql+psycopg2://postgres:postgres@airflow-postgres:5432/airflow
+      - AIRFLOW__CORE__FERNET_KEY=FB0o_zt4e3Ziq3LdUUO7F2Z95cvFFx16hU8jTeR1ASM=
+      - AIRFLOW__CORE__LOAD_EXAMPLES=False
+      - AIRFLOW__CORE__LOGGING_LEVEL=INFO
+      - _PIP_ADDITIONAL_REQUIREMENTS=${_PIP_ADDITIONAL_REQUIREMENTS:- apache-airflow-providers-apache-spark}
+      - JAVA_HOME=/usr/lib/jvm/java-11-openjdk-amd64
+
+
+  airflow-postgres:
+    image: postgres:12
+    container_name: airflow-postgres
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=airflow
+      - POSTGRES_PORT=5432
+    ports:
+      - "5432:5432"
